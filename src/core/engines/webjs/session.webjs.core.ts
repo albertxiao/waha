@@ -704,8 +704,43 @@ export class WhatsappSessionWebJSCore extends WhatsappSession {
     throw new AvailableInPlusVersion();
   }
 
-  sendVoice(request: MessageVoiceRequest) {
-    throw new AvailableInPlusVersion();
+    sendVoice(request: MessageVoiceRequest) {
+    const chatId = this.ensureSuffix(request.chatId);
+    const options = this.getMessageOptions(request);
+
+    let filePromise: Promise<Buffer>;
+    if ('data' in request.file) {
+      filePromise = Promise.resolve(Buffer.from(request.file.data, 'base64'));
+    } else if ('url' in request.file) {
+      filePromise = fetch(request.file.url)
+        .then(res => res.arrayBuffer())
+        .then(buf => Buffer.from(buf));
+    } else {
+      return Promise.reject(
+        new UnprocessableEntityException('Invalid file format for voice message')
+      );
+    }
+
+    return filePromise.then(media => {
+      const mimetype = request.file.mimetype;
+      const filename = 'filename' in request.file ? request.file.filename ?? null : null;
+      let filesize: number | null = null;
+      if ('filesize' in request.file && typeof request.file.filesize === 'number') {
+        filesize = request.file.filesize;
+      }
+
+      const messageMedia = new MessageMedia(
+        mimetype,
+        media.toString('base64'),
+        filename,
+        filesize
+      );
+      // Send as voice note (PTT)
+      return this.whatsapp.sendMessage(chatId, messageMedia, {
+        ...options,
+        ptt: true,
+      });
+    });
   }
 
   sendButtonsReply(request: MessageButtonReply) {
