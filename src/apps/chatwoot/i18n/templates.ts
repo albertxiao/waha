@@ -1,5 +1,4 @@
 import type { proto } from '@adiwajshing/baileys';
-import { ChatWootCommandsConfig } from '@waha/apps/chatwoot/dto/config.dto';
 import { WAMessage } from '@waha/structures/responses.dto';
 import { SimpleVCardInfo } from '@waha/core/vcard';
 
@@ -51,7 +50,13 @@ export enum TKey {
   WA_TO_CW_MESSAGE = 'whatsapp.to.chatwoot.message',
   WA_TO_CW_MESSAGE_CONTACTS = 'whatsapp.to.chatwoot.message.contacts',
   WA_TO_CW_MESSAGE_LOCATION = 'whatsapp.to.chatwoot.message.location',
+  WA_TO_CW_MESSAGE_POLL = 'whatsapp.to.chatwoot.message.poll',
+  WA_TO_CW_MESSAGE_EVENT = 'whatsapp.to.chatwoot.message.event',
+  WA_TO_CW_MESSAGE_PIX = 'whatsapp.to.chatwoot.message.pix',
   WA_TO_CW_MESSAGE_UNSUPPORTED = 'whatsapp.to.chatwoot.message.unsupported',
+  WA_TO_CW_MESSAGE_FACEBOOK_AD = 'whatsapp.to.chatwoot.message.facebook.ad',
+  WA_TO_CW_MESSAGE_LIST = 'whatsapp.to.chatwoot.message.list',
+  WA_TO_CW_MESSAGE_ALBUM = 'whatsapp.to.chatwoot.message.album',
 
   //
   // App Inbox
@@ -78,13 +83,14 @@ export enum TKey {
   //
   // App Commands
   //
-  APP_COMMANDS_LIST = 'app.commands.list',
-  APP_COMMANDS_SERVER_DISABLED = 'app.commands.server.disabled',
   APP_HELP_REMINDER = 'app.help.reminder',
   APP_SERVER_VERSION_AND_STATUS = 'app.server.version.and.status',
   APP_SERVER_REBOOT = 'app.server.reboot',
   APP_SERVER_REBOOT_FORCE = 'app.server.reboot.force',
   APP_LOGOUT_SUCCESS = 'app.logout.success',
+
+  // CLI
+  ['cli.cmd.disabled'] = 'cli.cmd.disabled',
 
   //
   // App Inbox
@@ -97,6 +103,34 @@ export enum TKey {
 interface Link {
   text: string;
   url: string;
+}
+
+export interface FacebookAdTemplateData {
+  title: string;
+  body: string;
+  thumbnailUrl: string;
+  originalImageUrl: string;
+  sourceUrl: string;
+  sourceId: string;
+}
+
+export interface PollOption {
+  optionName?: string;
+}
+
+export interface PollCreationMessage {
+  name?: string;
+  options?: Array<PollOption>;
+}
+
+export interface PixTemplatePayload {
+  merchantName?: string;
+  key?: string;
+  keyType?: string;
+  currency?: string;
+  totalAmount?: number;
+  totalAmountFormatted?: string;
+  referenceId?: string;
 }
 
 export type TemplatePayloads = {
@@ -131,7 +165,36 @@ export type TemplatePayloads = {
   };
   [TKey.WA_TO_CW_MESSAGE_CONTACTS]: { contacts: SimpleVCardInfo[] };
   [TKey.WA_TO_CW_MESSAGE_LOCATION]: { payload: any; message: proto.Message };
+  [TKey.WA_TO_CW_MESSAGE_POLL]: {
+    payload: WAMessage;
+    poll: PollCreationMessage;
+    message: proto.Message;
+  };
+  [TKey.WA_TO_CW_MESSAGE_EVENT]: {
+    payload: WAMessage;
+    message: {
+      eventMessage: Record<string, unknown>;
+    };
+  };
+  [TKey.WA_TO_CW_MESSAGE_LIST]: {
+    payload: WAMessage;
+    message: proto.Message;
+  };
+  [TKey.WA_TO_CW_MESSAGE_PIX]: {
+    payload: WAMessage;
+    message: proto.Message | null;
+    pixData: PixTemplatePayload;
+  };
   [TKey.WA_TO_CW_MESSAGE_UNSUPPORTED]: { details: Link };
+  [TKey.WA_TO_CW_MESSAGE_FACEBOOK_AD]: {
+    payload: WAMessage;
+    adData: FacebookAdTemplateData;
+  };
+  [TKey.WA_TO_CW_MESSAGE_ALBUM]: {
+    expectedImageCount: number;
+    expectedVideoCount: number;
+    totalCount: number;
+  };
   [TKey.JOB_SCHEDULED_ERROR_HEADER]: void;
   [TKey.JOB_REPORT_ERROR]: {
     header: string;
@@ -169,8 +232,7 @@ export type TemplatePayloads = {
   [TKey.APP_SESSION_STATUS_ERROR]: void;
   [TKey.APP_SESSION_SCAN_QR_CODE]: void;
   [TKey.APP_HELP_REMINDER]: void;
-  [TKey.APP_COMMANDS_LIST]: { commands: ChatWootCommandsConfig };
-  [TKey.APP_COMMANDS_SERVER_DISABLED]: void;
+  ['cli.cmd.disabled']: { command: string };
   [TKey.APP_SERVER_VERSION_AND_STATUS]: {
     version: string;
     status: string;
@@ -186,4 +248,5 @@ export type TemplatePayloads = {
   [TKey.WAHA_CORE_VERSION_USED]: {
     supportUrl: string;
   };
+  [key: string]: unknown;
 };

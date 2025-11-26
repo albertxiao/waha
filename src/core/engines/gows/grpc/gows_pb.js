@@ -8555,7 +8555,7 @@ proto.messages.EventMessage.prototype.hasLocation = function() {
  * @private {!Array<number>}
  * @const
  */
-proto.messages.MessageRequest.repeatedFields_ = [11,13];
+proto.messages.MessageRequest.repeatedFields_ = [11,13,19];
 
 
 
@@ -8606,7 +8606,8 @@ proto.messages.MessageRequest.toObject = function(includeInstance, msg) {
     poll: (f = msg.getPoll()) && proto.messages.PollMessage.toObject(includeInstance, f),
     list: (f = msg.getList()) && proto.messages.ListMessage.toObject(includeInstance, f),
     location: (f = msg.getLocation()) && proto.messages.Location.toObject(includeInstance, f),
-    pollvote: (f = msg.getPollvote()) && proto.messages.PollVoteMessage.toObject(includeInstance, f)
+    pollvote: (f = msg.getPollvote()) && proto.messages.PollVoteMessage.toObject(includeInstance, f),
+    mentionsList: (f = jspb.Message.getRepeatedField(msg, 19)) == null ? undefined : f
   };
 
   if (includeInstance) {
@@ -8725,6 +8726,10 @@ proto.messages.MessageRequest.deserializeBinaryFromReader = function(msg, reader
       var value = new proto.messages.PollVoteMessage;
       reader.readMessage(value,proto.messages.PollVoteMessage.deserializeBinaryFromReader);
       msg.setPollvote(value);
+      break;
+    case 19:
+      var value = /** @type {string} */ (reader.readString());
+      msg.addMentions(value);
       break;
     default:
       reader.skipField();
@@ -8890,6 +8895,13 @@ proto.messages.MessageRequest.serializeBinaryToWriter = function(message, writer
       18,
       f,
       proto.messages.PollVoteMessage.serializeBinaryToWriter
+    );
+  }
+  f = message.getMentionsList();
+  if (f.length > 0) {
+    writer.writeRepeatedString(
+      19,
+      f
     );
   }
 };
@@ -9445,6 +9457,43 @@ proto.messages.MessageRequest.prototype.clearPollvote = function() {
  */
 proto.messages.MessageRequest.prototype.hasPollvote = function() {
   return jspb.Message.getField(this, 18) != null;
+};
+
+
+/**
+ * repeated string mentions = 19;
+ * @return {!Array<string>}
+ */
+proto.messages.MessageRequest.prototype.getMentionsList = function() {
+  return /** @type {!Array<string>} */ (jspb.Message.getRepeatedField(this, 19));
+};
+
+
+/**
+ * @param {!Array<string>} value
+ * @return {!proto.messages.MessageRequest} returns this
+ */
+proto.messages.MessageRequest.prototype.setMentionsList = function(value) {
+  return jspb.Message.setField(this, 19, value || []);
+};
+
+
+/**
+ * @param {string} value
+ * @param {number=} opt_index
+ * @return {!proto.messages.MessageRequest} returns this
+ */
+proto.messages.MessageRequest.prototype.addMentions = function(value, opt_index) {
+  return jspb.Message.addToRepeatedField(this, 19, value, opt_index);
+};
+
+
+/**
+ * Clears the list making it empty but non-null.
+ * @return {!proto.messages.MessageRequest} returns this
+ */
+proto.messages.MessageRequest.prototype.clearMentionsList = function() {
+  return this.setMentionsList([]);
 };
 
 
@@ -18172,7 +18221,8 @@ proto.messages.GetMessagesRequest.toObject = function(includeInstance, msg) {
   var f, obj = {
     session: (f = msg.getSession()) && proto.messages.Session.toObject(includeInstance, f),
     filters: (f = msg.getFilters()) && proto.messages.MessageFilters.toObject(includeInstance, f),
-    pagination: (f = msg.getPagination()) && proto.messages.Pagination.toObject(includeInstance, f)
+    pagination: (f = msg.getPagination()) && proto.messages.Pagination.toObject(includeInstance, f),
+    sortby: (f = msg.getSortby()) && proto.messages.SortBy.toObject(includeInstance, f)
   };
 
   if (includeInstance) {
@@ -18223,6 +18273,11 @@ proto.messages.GetMessagesRequest.deserializeBinaryFromReader = function(msg, re
       var value = new proto.messages.Pagination;
       reader.readMessage(value,proto.messages.Pagination.deserializeBinaryFromReader);
       msg.setPagination(value);
+      break;
+    case 4:
+      var value = new proto.messages.SortBy;
+      reader.readMessage(value,proto.messages.SortBy.deserializeBinaryFromReader);
+      msg.setSortby(value);
       break;
     default:
       reader.skipField();
@@ -18275,6 +18330,14 @@ proto.messages.GetMessagesRequest.serializeBinaryToWriter = function(message, wr
       3,
       f,
       proto.messages.Pagination.serializeBinaryToWriter
+    );
+  }
+  f = message.getSortby();
+  if (f != null) {
+    writer.writeMessage(
+      4,
+      f,
+      proto.messages.SortBy.serializeBinaryToWriter
     );
   }
 };
@@ -18388,6 +18451,43 @@ proto.messages.GetMessagesRequest.prototype.clearPagination = function() {
  */
 proto.messages.GetMessagesRequest.prototype.hasPagination = function() {
   return jspb.Message.getField(this, 3) != null;
+};
+
+
+/**
+ * optional SortBy sortBy = 4;
+ * @return {?proto.messages.SortBy}
+ */
+proto.messages.GetMessagesRequest.prototype.getSortby = function() {
+  return /** @type{?proto.messages.SortBy} */ (
+    jspb.Message.getWrapperField(this, proto.messages.SortBy, 4));
+};
+
+
+/**
+ * @param {?proto.messages.SortBy|undefined} value
+ * @return {!proto.messages.GetMessagesRequest} returns this
+*/
+proto.messages.GetMessagesRequest.prototype.setSortby = function(value) {
+  return jspb.Message.setWrapperField(this, 4, value);
+};
+
+
+/**
+ * Clears the message field making it undefined.
+ * @return {!proto.messages.GetMessagesRequest} returns this
+ */
+proto.messages.GetMessagesRequest.prototype.clearSortby = function() {
+  return this.setSortby(undefined);
+};
+
+
+/**
+ * Returns whether this field is set.
+ * @return {boolean}
+ */
+proto.messages.GetMessagesRequest.prototype.hasSortby = function() {
+  return jspb.Message.getField(this, 4) != null;
 };
 
 

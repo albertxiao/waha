@@ -315,9 +315,7 @@ export class NowebPersistentStore implements INowebStore {
       Object.assign(message, fields);
       // In case of revoked messages - remove it
       // TODO: May be we should save the flag instead of completely removing the message
-      const isYetRealMessage =
-        esm.b.isRealMessage(message, this.socket?.authState?.creds?.me?.id) ||
-        false;
+      const isYetRealMessage = esm.b.isRealMessage(message) || false;
       if (isYetRealMessage) {
         await this.messagesRepo.upsertOne(message);
       } else {
@@ -603,7 +601,7 @@ export class NowebPersistentStore implements INowebStore {
     pagination: PaginationParams,
   ): Promise<any> {
     pagination.sortBy = 'messageTimestamp';
-    pagination.sortOrder = SortOrder.DESC;
+    pagination.sortOrder = pagination.sortOrder || SortOrder.DESC;
     return this.messagesRepo.getAllByJid(chatId, filter, pagination);
   }
 

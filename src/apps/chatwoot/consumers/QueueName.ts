@@ -6,6 +6,12 @@ export enum QueueName {
   SCHEDULED_CHECK_VERSION = 'chatwoot.scheduled | check.version',
 
   //
+  // Task
+  //
+  TASK_CONTACTS_PULL = 'chatwoot.task | contacts.pull',
+  TASK_MESSAGES_PULL = 'chatwoot.task | messages.pull',
+
+  //
   // WAHA Events
   //
   WAHA_SESSION_STATUS = 'chatwoot.waha | session.status',
@@ -13,6 +19,7 @@ export enum QueueName {
   WAHA_MESSAGE_REACTION = 'chatwoot.waha | message.reaction',
   WAHA_MESSAGE_EDITED = 'chatwoot.waha | message.edited',
   WAHA_MESSAGE_REVOKED = 'chatwoot.waha | message.revoked',
+  WAHA_MESSAGE_ACK = 'chatwoot.waha | message.ack',
   //
   // ChatWoot Events - Real
   //
@@ -25,4 +32,8 @@ export enum QueueName {
   //
   INBOX_MESSAGE_DELETED = 'chatwoot.inbox | message_deleted',
   INBOX_COMMANDS = 'chatwoot.inbox | commands',
+}
+
+export enum FlowProducerName {
+  MESSAGES_PULL_FLOW = 'messages.pull.flow',
 }

@@ -6,6 +6,8 @@ import {
 } from '@waha/apps/chatwoot/client/interfaces';
 import type { conversation } from '@figuro/chatwoot-sdk/dist/models/conversation';
 import { ConversationSelector } from '@waha/apps/chatwoot/services/ConversationSelector';
+import axios from 'axios';
+import { ChatWootInboxNewAPI } from '@waha/apps/chatwoot/client/ChatWootInboxNewAPI';
 
 export type ConversationResult = Pick<conversation, 'id' | 'account_id'>;
 
@@ -38,7 +40,7 @@ export class ConversationService {
       inboxIdentifier: this.config.inboxIdentifier,
       contactIdentifier: contact.sourceId,
     });
-    this.logger.info(
+    this.logger.debug(
       `Created conversation.id: ${conversation.id} for contact.id: ${contact.id}, contact.sourceId: ${contact.sourceId}`,
     );
     return conversation;
@@ -49,9 +51,38 @@ export class ConversationService {
     if (!conversation) {
       conversation = await this.create(contact);
     }
-    this.logger.info(
+    this.logger.debug(
       `Using conversation.id: ${conversation.id} for contact.id: ${contact.id}, contact.sourceId: ${contact.sourceId}`,
     );
     return conversation;
+  }
+
+  async markAsRead(conversationId: number, sourceId: string): Promise<void> {
+    try {
+      const inboxNewAPI = new ChatWootInboxNewAPI(
+        this.config.url,
+        this.config.inboxIdentifier,
+      );
+      await inboxNewAPI.updateLastSeen(sourceId, conversationId);
+      this.logger.info(
+        `Marked conversation.id: ${conversationId} as read in inbox: ${this.config.inboxIdentifier} for contact: ${sourceId}`,
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Error marking conversation.id: ${conversationId} as read: ${reason}`,
+      );
+      throw error;
+    }
+  }
+
+  async resolve(conversationId: number): Promise<any> {
+    return this.accountAPI.conversations.toggleStatus({
+      accountId: this.config.accountId,
+      conversationId: conversationId,
+      data: {
+        status: 'resolved',
+      },
+    });
   }
 }

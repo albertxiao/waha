@@ -12,7 +12,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-import { WAHASessionStatus } from './enums.dto';
+import { WAHAPresenceStatus, WAHASessionStatus } from './enums.dto';
 import { ChatIdProperty } from './properties.dto';
 import { WebhookConfig } from './webhooks.config.dto';
 
@@ -150,7 +150,7 @@ export class SessionConfig {
   })
   @IsDynamicObject()
   @IsOptional()
-  metadata?: Map<string, string>;
+  metadata?: Record<string, string>;
 
   @ApiProperty({
     example: null,
@@ -225,12 +225,23 @@ export class MeInfo {
   })
   lid?: string;
 
+  @ApiProperty({
+    example: '123123:123@s.whatsapp.net',
+    description: 'Your id with device number',
+  })
+  jid?: string;
+
   pushName: string;
 }
 
 export class SessionInfo extends SessionDTO {
   me?: MeInfo;
   assignedWorker?: string;
+  // Timestamp of the last activity in milliseconds
+  presence: WAHAPresenceStatus.ONLINE | WAHAPresenceStatus.OFFLINE | null;
+  timestamps: {
+    activity: number | null;
+  };
 }
 
 export class SessionDetailedInfo extends SessionInfo {

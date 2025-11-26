@@ -1,4 +1,8 @@
-import type { proto, WAMessageKey } from '@adiwajshing/baileys';
+import {
+  normalizeMessageContent,
+  proto,
+  WAMessageKey,
+} from '@adiwajshing/baileys';
 import * as grpc from '@grpc/grpc-js';
 import { connectivityState } from '@grpc/grpc-js';
 import { UnprocessableEntityException } from '@nestjs/common';
@@ -11,6 +15,7 @@ import { Jid } from '@waha/core/engines/const';
 import { EventsFromObservable } from '@waha/core/engines/gows/EventsFromObservable';
 import { GowsEventStreamObservable } from '@waha/core/engines/gows/GowsEventStreamObservable';
 import {
+  ToGroupParticipants,
   ToGroupV2JoinEvent,
   ToGroupV2LeaveEvent,
   ToGroupV2ParticipantsEvents,
@@ -60,6 +65,7 @@ import {
   GetChatMessageQuery,
   GetChatMessagesFilter,
   GetChatMessagesQuery,
+  MessageSortField,
   OverviewFilter,
   ReadChatMessagesQuery,
   ReadChatMessagesResponse,
@@ -100,6 +106,7 @@ import {
 import { BinaryFile, RemoteFile } from '@waha/structures/files.dto';
 import {
   CreateGroupRequest,
+  GroupParticipant,
   GroupSortField,
   Participant,
   ParticipantsRequest,
@@ -141,14 +148,13 @@ import {
   partition,
   retry,
   share,
+  Subject,
 } from 'rxjs';
-import { Subject } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { promisify } from 'util';
 
 import * as gows from './types';
 import { MessageStatus } from './types';
-import MessageServiceClient = messages.MessageServiceClient;
 import { isFromFullSync } from '@waha/core/engines/gows/appstate';
 import { toVcardV3 } from '@waha/core/vcard';
 import { AckToStatus } from '@waha/core/utils/acks';
@@ -166,6 +172,12 @@ import {
   isLabelUpsertEvent,
 } from './labels.gows';
 import esm from '@waha/vendor/esm';
+import { IsEditedMessage } from '@waha/core/utils/pwa';
+import MessageServiceClient = messages.MessageServiceClient;
+import { GoToJSWAProto } from '@waha/core/engines/gows/waproto';
+import { extractWALocation } from '@waha/core/engines/waproto/locaiton';
+import { extractVCards } from '@waha/core/engines/waproto/vcards';
+import { Activity } from '@waha/core/abc/activity';
 
 enum WhatsMeowEvent {
   CONNECTED = 'gows.ConnectedEventData',
@@ -192,8 +204,8 @@ enum WhatsMeowEvent {
 }
 
 const gRPCClientConfig = {
-  'grpc.max_send_message_length': 128 * 1024 * 1024,
-  'grpc.max_receive_message_length': 128 * 1024 * 1024,
+  'grpc.max_send_message_length': 512 * 1024 * 1024,
+  'grpc.max_receive_message_length': 512 * 1024 * 1024,
 };
 
 export interface GowsConfig {
@@ -325,11 +337,15 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
 
     events.on(WhatsMeowEvent.DISCONNECTED, () => {
       if (this.status != WAHASessionStatus.STARTING) {
+        this.cleanupPresenceTimeout();
+        this.presence = null;
         this.status = WAHASessionStatus.STARTING;
       }
     });
     events.on(WhatsMeowEvent.KEEP_ALIVE_TIMEOUT, () => {
       if (this.status != WAHASessionStatus.STARTING) {
+        this.cleanupPresenceTimeout();
+        this.presence = null;
         this.status = WAHASessionStatus.STARTING;
       }
     });
@@ -491,19 +507,15 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
 
     // Handle edited messages
     const messagesEdited$ = messages$.pipe(
-      filter((msg) => {
-        return (
-          msg?.Message?.protocolMessage?.type === 14 &&
-          msg?.Message?.protocolMessage?.editedMessage !== undefined
-        );
-      }),
+      filter((message) => IsEditedMessage(message.Message)),
       mergeMap(async (message): Promise<WAMessageEditedBody> => {
         const waMessage = await this.toWAMessage(message);
+        const content = normalizeMessageContent(message.Message);
         // Extract the body from editedMessage using extractBody function
-        const body =
-          extractBody(message.Message.protocolMessage.editedMessage) || '';
+        const body = extractBody(content.protocolMessage.editedMessage) || '';
         // Extract the original message ID from protocolMessage.key
-        const editedMessageId = message.Message.protocolMessage.key?.ID;
+        // @ts-ignore
+        const editedMessageId = content.protocolMessage.key?.ID;
         return {
           ...waMessage,
           body: body,
@@ -662,6 +674,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     this.events2.get(WAHAEvents.LABEL_CHAT_DELETED).switch(labelChatDeleted$);
   }
 
+  @Activity()
   async fetchContactProfilePicture(id: string): Promise<string> {
     const jid = toJID(this.ensureSuffix(id));
     const request = new messages.ProfilePictureRequest({
@@ -680,6 +693,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
   }
 
   async stop(): Promise<void> {
+    this.cleanupPresenceTimeout();
     if (this.client) {
       const response = await promisify(this.client.StopSession)(this.session);
       response.toObject();
@@ -754,6 +768,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
   /**
    * Profile methods
    */
+  @Activity()
   public async setProfileName(name: string): Promise<boolean> {
     const request = new messages.ProfileNameRequest({
       session: this.session,
@@ -764,6 +779,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return true;
   }
 
+  @Activity()
   public async setProfileStatus(status: string): Promise<boolean> {
     const request = new messages.ProfileStatusRequest({
       session: this.session,
@@ -793,6 +809,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return data.id;
   }
 
+  @Activity()
   async sendText(request: MessageTextRequest) {
     const jid = toJID(this.ensureSuffix(request.chatId));
     const message = new messages.MessageRequest({
@@ -802,12 +819,14 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
       linkPreview: request.linkPreview ?? true,
       linkPreviewHighQuality: request.linkPreviewHighQuality,
       replyTo: getMessageIdFromSerialized(request.reply_to),
+      mentions: request.mentions?.map((mention) => toJID(mention)),
     });
     const response = await promisify(this.client.SendMessage)(message);
     const data = response.toObject();
     return this.messageResponse(jid, data);
   }
 
+  @Activity()
   public async editMessage(
     chatId: string,
     messageId: string,
@@ -828,6 +847,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return this.messageResponse(jid, data);
   }
 
+  @Activity()
   async sendContactVCard(request: MessageContactVcardRequest) {
     const jid = toJID(this.ensureSuffix(request.chatId));
     const contacts = request.contacts.map((el) => ({ vcard: toVcardV3(el) }));
@@ -842,6 +862,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return this.messageResponse(jid, data);
   }
 
+  @Activity()
   async sendPoll(request: MessagePollRequest) {
     const jid = toJID(request.chatId);
     const message = new messages.MessageRequest({
@@ -867,6 +888,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     throw new AvailableInPlusVersion();
   }
 
+  @Activity()
   public async deleteMessage(chatId: string, messageId: string) {
     const jid = toJID(this.ensureSuffix(chatId));
     const key = parseMessageIdSerialized(messageId);
@@ -888,6 +910,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return contacts.map(toJID);
   }
 
+  @Activity()
   public async sendTextStatus(status: TextStatus) {
     const participants = await this.prepareJidsForStatus(status.contacts);
     const message = new messages.MessageRequest({
@@ -943,9 +966,10 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
   async checkNumberStatus(
     request: CheckNumberStatusQuery,
   ): Promise<WANumberExistResult> {
+    let phone = request.phone.replace(/\+/g, '');
     const req = new messages.CheckPhonesRequest({
       session: this.session,
-      phones: [request.phone],
+      phones: [phone],
     });
     const response = await promisify(this.client.CheckPhones)(req);
     const data = response.toObject();
@@ -956,6 +980,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     };
   }
 
+  @Activity()
   async sendLocation(request: MessageLocationRequest) {
     const jid = toJID(this.ensureSuffix(request.chatId));
     const message = new messages.MessageRequest({
@@ -974,7 +999,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
   }
 
   forwardMessage(request: MessageForwardRequest): Promise<WAMessage> {
-    throw new Error('Method not implemented.');
+    throw new NotImplementedByEngineError();
   }
 
   sendImage(request: MessageImageRequest) {
@@ -995,10 +1020,12 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     throw new AvailableInPlusVersion();
   }
 
+  @Activity()
   reply(request: MessageReplyRequest) {
-    throw new Error('Method not implemented.');
+    return this.sendText(request);
   }
 
+  @Activity()
   async sendSeen(request: SendSeenRequest) {
     const keys = ExtractMessageKeysForRead(request);
     if (keys.length === 0) {
@@ -1021,10 +1048,12 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return;
   }
 
-  startTyping(chat: ChatRequest) {
-    return this.setPresence(WAHAPresenceStatus.TYPING, chat.chatId);
+  @Activity()
+  async startTyping(chat: ChatRequest): Promise<void> {
+    await this.setPresence(WAHAPresenceStatus.TYPING, chat.chatId);
   }
 
+  @Activity()
   stopTyping(chat: ChatRequest) {
     return this.setPresence(WAHAPresenceStatus.PAUSED, chat.chatId);
   }
@@ -1032,6 +1061,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
   /**
    * Group methods
    */
+  @Activity()
   public async createGroup(request: CreateGroupRequest) {
     const req = new messages.CreateGroupRequest({
       session: this.session,
@@ -1043,6 +1073,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return data;
   }
 
+  @Activity()
   public async joinInfoGroup(code: string): Promise<any> {
     const req = new messages.GroupCodeRequest({
       session: this.session,
@@ -1053,6 +1084,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return data;
   }
 
+  @Activity()
   public async joinGroup(code: string): Promise<string> {
     const req = new messages.GroupCodeRequest({
       session: this.session,
@@ -1083,6 +1115,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     delete group.Participants;
   }
 
+  @Activity()
   public async refreshGroups(): Promise<boolean> {
     const req = this.session;
     await promisify(this.client.FetchGroups)(req);
@@ -1099,6 +1132,14 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return data;
   }
 
+  public async getGroupParticipants(id: string): Promise<GroupParticipant[]> {
+    const group = await this.getGroup(id);
+    if (!group?.Participants?.length) {
+      return [];
+    }
+    return ToGroupParticipants(group.Participants);
+  }
+
   public async getInfoAdminsOnly(id): Promise<SettingsSecurityChangeInfo> {
     const group = await this.getGroup(id);
     return {
@@ -1106,6 +1147,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     };
   }
 
+  @Activity()
   public async setInfoAdminsOnly(id, value) {
     const req = new messages.JidBoolRequest({
       session: this.session,
@@ -1123,6 +1165,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     };
   }
 
+  @Activity()
   public async setMessagesAdminsOnly(id, value) {
     const req = new messages.JidBoolRequest({
       session: this.session,
@@ -1137,6 +1180,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     throw new NotImplementedByEngineError();
   }
 
+  @Activity()
   public async leaveGroup(id) {
     const req = new messages.JidRequest({
       session: this.session,
@@ -1145,6 +1189,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     await promisify(this.client.LeaveGroup)(req);
   }
 
+  @Activity()
   public async setDescription(id, description) {
     const req = new messages.JidStringRequest({
       session: this.session,
@@ -1154,6 +1199,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     await promisify(this.client.SetGroupDescription)(req);
   }
 
+  @Activity()
   public async setSubject(id, description) {
     const req = new messages.JidStringRequest({
       session: this.session,
@@ -1163,6 +1209,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     await promisify(this.client.SetGroupName)(req);
   }
 
+  @Activity()
   public async getInviteCode(id): Promise<string> {
     const req = new messages.JidRequest({
       session: this.session,
@@ -1173,6 +1220,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return data.value;
   }
 
+  @Activity()
   public async revokeInviteCode(id): Promise<string> {
     const req = new messages.JidRequest({
       session: this.session,
@@ -1205,26 +1253,31 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return data;
   }
 
+  @Activity()
   public addParticipants(id: string, request: ParticipantsRequest) {
     const action = messages.ParticipantAction.ADD;
     return this.updateParticipants(id, request.participants, action);
   }
 
+  @Activity()
   public removeParticipants(id, request: ParticipantsRequest) {
     const action = messages.ParticipantAction.REMOVE;
     return this.updateParticipants(id, request.participants, action);
   }
 
+  @Activity()
   public promoteParticipantsToAdmin(id, request: ParticipantsRequest) {
     const action = messages.ParticipantAction.PROMOTE;
     return this.updateParticipants(id, request.participants, action);
   }
 
+  @Activity()
   public demoteParticipantsToUser(id, request: ParticipantsRequest) {
     const action = messages.ParticipantAction.DEMOTE;
     return this.updateParticipants(id, request.participants, action);
   }
 
+  @Activity()
   async setReaction(request: MessageReactionRequest) {
     const key = parseMessageIdSerialized(request.messageId);
     const message = new messages.MessageReaction({
@@ -1239,6 +1292,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return this.messageResponse(key.remoteJid, data);
   }
 
+  @Activity()
   async sendEvent(request: EventMessageRequest): Promise<WAMessage> {
     const jid = toJID(this.ensureSuffix(request.chatId));
     const event = request.event;
@@ -1277,6 +1331,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return this.messageResponse(jid, data) as any;
   }
 
+  @Activity()
   async cancelEvent(eventId: string): Promise<WAMessage> {
     throw new Error('Method not implemented.');
 
@@ -1312,6 +1367,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
         method = this.client.SendPresence;
         break;
       case WAHAPresenceStatus.TYPING:
+        await this.maintainPresenceOnline();
         request = new messages.ChatPresenceRequest({
           session: this.session,
           jid: jid,
@@ -1320,6 +1376,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
         method = this.client.SendChatPresence;
         break;
       case WAHAPresenceStatus.RECORDING:
+        await this.maintainPresenceOnline();
         request = new messages.ChatPresenceRequest({
           session: this.session,
           jid: jid,
@@ -1328,6 +1385,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
         method = this.client.SendChatPresence;
         break;
       case WAHAPresenceStatus.PAUSED:
+        await this.maintainPresenceOnline();
         request = new messages.ChatPresenceRequest({
           session: this.session,
           jid: jid,
@@ -1340,6 +1398,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
         throw new Error('Invalid presence status');
     }
     await promisify(method)(request);
+    this.presence = presence;
   }
 
   public async getPresences(): Promise<WAHAChatPresences[]> {
@@ -1361,6 +1420,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return this.toWahaPresences(jid, result);
   }
 
+  @Activity()
   async subscribePresence(chatId: string) {
     const jid = toJID(chatId);
     const req = new messages.SubscribePresenceRequest({
@@ -1482,6 +1542,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return channels;
   }
 
+  @Activity()
   public async channelsCreateChannel(
     request: CreateChannelRequest,
   ): Promise<Channel> {
@@ -1495,10 +1556,12 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return this.toChannel(newsletter);
   }
 
+  @Activity()
   public async channelsGetChannel(id: string): Promise<Channel> {
     return await this.channelsGetChannelByInviteCode(id);
   }
 
+  @Activity()
   public async channelsGetChannelByInviteCode(
     inviteCode: string,
   ): Promise<Channel> {
@@ -1511,10 +1574,12 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return this.toChannel(newsletter);
   }
 
+  @Activity()
   public channelsFollowChannel(id: string): Promise<any> {
     return this.channelsToggleFollow(id, true);
   }
 
+  @Activity()
   public channelsUnfollowChannel(id: string): Promise<any> {
     return this.channelsToggleFollow(id, false);
   }
@@ -1531,10 +1596,12 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return response.toObject();
   }
 
+  @Activity()
   public channelsMuteChannel(id: string): Promise<void> {
     return this.channelsToggleMute(id, true);
   }
 
+  @Activity()
   public channelsUnmuteChannel(id: string): Promise<void> {
     return this.channelsToggleMute(id, false);
   }
@@ -1552,7 +1619,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
   /**
    * Contacts methods
    */
-
+  @Activity()
   public async upsertContact(chatId: string, body: ContactUpdateBody) {
     const jid = toJID(chatId);
     const request = new messages.UpdateContactRequest({
@@ -1777,6 +1844,13 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
         fromMe: optional(filter['filter.fromMe'], messages.OptionalBool),
         status: optional(status, messages.OptionalUInt32),
       }),
+      sortBy: new messages.SortBy({
+        field: query.sortBy || MessageSortField.TIMESTAMP,
+        order:
+          query.sortOrder === SortOrder.ASC
+            ? messages.SortBy.Order.ASC
+            : messages.SortBy.Order.DESC,
+      }),
       pagination: new messages.Pagination({
         limit: query.limit,
         offset: query.offset,
@@ -1793,6 +1867,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return result;
   }
 
+  @Activity()
   public readChatMessages(
     chatId: string,
     request: ReadChatMessagesQuery,
@@ -1828,6 +1903,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return labels.map(this.toLabel);
   }
 
+  @Activity()
   public async createLabel(labelDto: LabelDTO): Promise<Label> {
     const labels = await this.getLabels();
     const highestLabelId = lodash.max(
@@ -1853,6 +1929,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     };
   }
 
+  @Activity()
   public async updateLabel(label: Label): Promise<Label> {
     const request = new messages.UpsertLabelRequest({
       session: this.session,
@@ -1866,6 +1943,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return label;
   }
 
+  @Activity()
   public async deleteLabel(label: Label): Promise<void> {
     const request = new messages.DeleteLabelRequest({
       session: this.session,
@@ -1903,6 +1981,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return labels.map(this.toLabel);
   }
 
+  @Activity()
   public async chatsUnreadChat(chatId: string): Promise<any> {
     const jid = toJID(this.ensureSuffix(chatId));
     const request = new messages.ChatUnreadRequest({
@@ -1914,6 +1993,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     return { success: true };
   }
 
+  @Activity()
   public async putLabelsToChat(chatId: string, labels: LabelID[]) {
     const jid = toJID(chatId);
     const labelsIds = labels.map((label) => label.id);
@@ -1947,17 +2027,18 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     // if there is no text or media message
     if (!message) return;
     if (!message.Message) return;
-    // Ignore reactions, we have a dedicated handler for that
-    if (message.Message.reactionMessage) return;
-    // Ignore poll votes, we have a dedicated handler for that
-    if (message.Message.pollUpdateMessage) return;
-    // Ignore event response, we have a dedicated handler for that
-    if (message.Message.encEventResponseMessage) return;
-    // Ignore protocol messages
-    if (message.Message.protocolMessage) return;
 
-    const normalizedContent = esm.b.normalizeMessageContent(message.Message);
-    const contentType = esm.b.getContentType(normalizedContent);
+    const content = esm.b.normalizeMessageContent(message.Message);
+    // Ignore reactions, we have a dedicated handler for that
+    if (content.reactionMessage) return;
+    // Ignore poll votes, we have a dedicated handler for that
+    if (content.pollUpdateMessage) return;
+    // Ignore event response, we have a dedicated handler for that
+    if (content.encEventResponseMessage) return;
+    // Ignore protocol messages
+    if (content.protocolMessage) return;
+
+    const contentType = esm.b.getContentType(content);
     // Ignore device sent message
     if (contentType == 'deviceSentMessage') {
       return;
@@ -2019,6 +2100,16 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     const mediaContent = extractMediaContent(message.Message);
     const source = this.getSourceDeviceByMsg(message);
 
+    let waproto: proto.Message | null = null;
+    try {
+      waproto = GoToJSWAProto(message.Message);
+    } catch (e) {
+      this.logger.error(
+        'Failed to resolve proto message from GOWS to JS format',
+      );
+      this.logger.error(e, e.stack);
+    }
+
     return {
       id: id,
       timestamp: parseTimestampToSeconds(message.Info.Timestamp),
@@ -2034,7 +2125,8 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
       mediaUrl: message.media?.url,
       // @ts-ignore
       ack: ack,
-      // @ts-ignore
+      location: extractWALocation(waproto),
+      vCards: extractVCards(waproto),
       ackName: WAMessageAck[ack] || ACK_UNKNOWN,
       replyTo: replyTo,
       _data: message,

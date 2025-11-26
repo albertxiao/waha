@@ -6,13 +6,13 @@ import {
   Post,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { FindChatID } from '@waha/apps/chatwoot/client/ids';
+import { IsCommandsChat } from '@waha/apps/chatwoot/client/ids';
 import { EventName, MessageType } from '@waha/apps/chatwoot/client/types';
-import { INBOX_CONTACT_CHAT_ID } from '@waha/apps/chatwoot/const';
 import { InboxData } from '@waha/apps/chatwoot/consumers/types';
 import { ChatWootQueueService } from '@waha/apps/chatwoot/services/ChatWootQueueService';
 import { SessionManager } from '@waha/core/abc/manager.abc';
 import { AppRepository } from '@waha/apps/app_sdk/storage/AppRepository';
+import { CommandPrefix } from '@waha/apps/chatwoot/cli';
 
 @Controller('webhooks/chatwoot/')
 @ApiTags('🧩 Apps')
@@ -36,14 +36,24 @@ export class ChatwootWebhookController {
       return { success: true };
     }
 
-    // Ignore all private notes
-    if (body.private) {
-      return { success: true };
-    }
-
     // Ignore all incoming messages
     if (body.message_type == MessageType.INCOMING) {
       return { success: true };
+    }
+
+    const isCommandsChat = IsCommandsChat(body);
+    // Ignore private notes (most of them)
+    const deleted = body?.content_attributes?.deleted;
+    if (body.private) {
+      // Ignore any private note in commands chats
+      if (isCommandsChat) {
+        return { success: true };
+      }
+      // keep "deleted" notes
+      // So Agent can delete "Sent From API/WhatsApp" messages in ChatWoot
+      if (!deleted) {
+        return { success: true };
+      }
     }
 
     const data: InboxData = {
@@ -61,12 +71,8 @@ export class ChatwootWebhookController {
     }
 
     // Check if it's a command message (sent to the special inbox contact)
-    const sender = body?.conversation?.meta?.sender;
-    const chatId = FindChatID(sender);
-    const isCommandsChat = chatId === INBOX_CONTACT_CHAT_ID;
-
     // Check if it's a deleted message
-    if (body.content_attributes?.deleted && !isCommandsChat) {
+    if (deleted && !isCommandsChat) {
       await this.chatWootQueueService.addMessageDeletedJob(data);
       return { success: true };
     }
@@ -74,17 +80,30 @@ export class ChatwootWebhookController {
     // Route to specific queues based on an event type
     switch (body.event) {
       case EventName.MESSAGE_CREATED:
-        if (!isCommandsChat) {
-          await this.chatWootQueueService.addMessageCreatedJob(data);
-        } else {
+        if (isCommandsChat || body.content?.startsWith(CommandPrefix)) {
           await this.chatWootQueueService.addCommandsJob(body.event, data);
+        } else {
+          await this.chatWootQueueService.addMessageCreatedJob(data);
         }
         return { success: true };
       case EventName.MESSAGE_UPDATED:
-        if (!isCommandsChat) {
-          await this.chatWootQueueService.addMessageUpdatedJob(data);
-        } else {
+        // We handle only "retries" on message_update
+        // This is the attribute ChatWoot send
+        // There's NO other way to identify "status: read" updates right now
+        // There's no "body.status" in message_updated webhook :(
+        const isRetryNull = body.content_attributes?.external_error === null;
+        const isRetrySomething = Boolean(
+          body.content_attributes?.external_error,
+        );
+        const isRetry = isRetryNull || isRetrySomething;
+        if (!isRetry) {
+          return { success: true };
+        }
+
+        if (isCommandsChat || body.content?.startsWith(CommandPrefix)) {
           await this.chatWootQueueService.addCommandsJob(body.event, data);
+        } else {
+          await this.chatWootQueueService.addMessageUpdatedJob(data);
         }
         return { success: true };
       default:

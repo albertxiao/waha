@@ -4,6 +4,7 @@ import Knex from 'knex';
 import * as path from 'path';
 
 import { LocalStore } from './LocalStore';
+import { KNEX_SQLITE_CLIENT } from '@waha/core/env';
 
 export class LocalStoreCore extends LocalStore {
   protected readonly baseDirectory: string =
@@ -23,6 +24,7 @@ export class LocalStoreCore extends LocalStore {
       this.knex = this.buildKnex();
       await this.knex.raw('PRAGMA journal_mode = WAL;');
       await this.knex.raw('PRAGMA foreign_keys = ON;');
+      await this.knex.raw('PRAGMA busy_timeout = 5000;');
     }
     if (sessionName) {
       await fs.mkdir(this.getSessionDirectory(sessionName), {
@@ -68,9 +70,17 @@ export class LocalStoreCore extends LocalStore {
     const engineDir = this.getEngineDirectory();
     const database = path.join(engineDir, 'waha.sqlite3');
     return Knex({
-      client: 'sqlite3',
+      client: KNEX_SQLITE_CLIENT,
       connection: { filename: database },
       useNullAsDefault: true,
+      acquireConnectionTimeout: 120_000,
+      pool: {
+        min: 1,
+        max: 10,
+        idleTimeoutMillis: 60_000,
+        createTimeoutMillis: 120_000,
+        acquireTimeoutMillis: 120_000,
+      },
     });
   }
 

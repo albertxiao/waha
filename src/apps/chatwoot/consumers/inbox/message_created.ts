@@ -8,14 +8,14 @@ import {
 } from '@waha/apps/chatwoot/consumers/inbox/base';
 import { QueueName } from '@waha/apps/chatwoot/consumers/QueueName';
 import { DIContainer } from '@waha/apps/chatwoot/di/DIContainer';
-import { EngineHelper } from '@waha/apps/chatwoot/session';
-import { WAHASessionAPI } from '@waha/apps/chatwoot/session/WAHASelf';
+import { EngineHelper } from '@waha/apps/chatwoot/waha';
+import { WAHASessionAPI } from '@waha/apps/app_sdk/waha/WAHASelf';
 import {
   ChatwootMessage,
   MessageMapping,
   MessageMappingService,
 } from '@waha/apps/chatwoot/storage';
-import { MarkdownToWhatsApp } from '@waha/apps/chatwoot/text';
+import { MarkdownToWhatsApp } from '@waha/apps/chatwoot/messages/to/whatsapp/markdown';
 import { SessionManager } from '@waha/core/abc/manager.abc';
 import { RMutexService } from '@waha/modules/rmutex/rmutex.service';
 import {
@@ -80,7 +80,10 @@ export class MessageHandler {
   async handle(body: any) {
     const chatId = await LookupAndCheckChatId(this.session, body);
     const message = body;
-    if (message.content_type != 'text') {
+    if (
+      message.content_type != 'text' &&
+      message.content_type != 'input_csat'
+    ) {
       this.logger.info(
         `Message content type not supported. Content type: ${message.content_type}`,
       );

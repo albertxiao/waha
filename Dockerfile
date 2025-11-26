@@ -163,6 +163,7 @@ RUN if [ "$USE_BROWSER" = "chromium" ]; then \
 # Available versions:
 # https://www.ubuntuupdates.org/package/google_chrome/stable/main/base/google-chrome-stable
 ARG CHROME_VERSION="140.0.7339.80-1"
+ARG OPUSTAGS_VERSION="1.10.1"
 RUN if [ "$USE_BROWSER" = "chrome" ]; then \
         wget --no-verbose -O /tmp/chrome.deb https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_amd64.deb \
           && apt-get update \
@@ -175,6 +176,22 @@ RUN if [ "$USE_BROWSER" = "chrome" ]; then \
 RUN apt-get update  \
     && apt-get install -y curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Build and install opustags so audio metadata can be cleaned up inside the container
+RUN set -eux; \
+    buildDeps='build-essential cmake pkg-config libogg-dev'; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ${buildDeps}; \
+    mkdir -p /tmp/opustags; \
+    curl -L https://github.com/fmang/opustags/archive/refs/tags/${OPUSTAGS_VERSION}.tar.gz \
+      | tar -xz -C /tmp/opustags; \
+    cd /tmp/opustags/opustags-${OPUSTAGS_VERSION}; \
+    cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release; \
+    cmake --build build --config Release; \
+    cmake --install build; \
+    rm -rf /tmp/opustags; \
+    apt-get purge -y --auto-remove ${buildDeps}; \
+    rm -rf /var/lib/apt/lists/*
 
 # GOWS requirements
 # libc6
@@ -195,6 +212,11 @@ COPY --from=build /git/node_modules ./node_modules
 COPY --from=build /git/dist ./dist
 COPY --from=dashboard /dashboard ./dist/dashboard
 COPY --from=gows /go/gows/bin/gows /app/gows
+COPY .env.example ./.env.example
+COPY scripts/init-waha.js ./scripts/init-waha.js
+RUN chmod +x ./scripts/init-waha.js \
+  && printf '%s\n' '#!/bin/sh' 'exec node /app/scripts/init-waha.js "$@"' > /usr/local/bin/init-waha \
+  && chmod +x /usr/local/bin/init-waha
 ENV WAHA_GOWS_PATH=/app/gows
 ENV WAHA_GOWS_SOCKET=/tmp/gows.sock
 

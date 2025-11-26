@@ -218,11 +218,15 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
     webhook.configure(session, webhooks);
 
     // Apps
-    await this.configureApps(session);
+    await this.appsService.beforeSessionStart(session, this.store);
 
     // start session
     await session.start();
     logger.info('Session has been started.');
+
+    // Apps
+    await this.appsService.afterSessionStart(session, this.store);
+
     return {
       name: session.name,
       status: session.status,
@@ -345,6 +349,10 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
           status: WAHASessionStatus.STOPPED,
           config: this.sessionConfig,
           me: null,
+          presence: null,
+          timestamps: {
+            activity: null,
+          },
         },
       ];
     }
@@ -363,6 +371,10 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
         status: session.status,
         config: session.sessionConfig,
         me: me,
+        presence: session.presence,
+        timestamps: {
+          activity: session?.getLastActivityTimestamp(),
+        },
       },
     ];
   }
@@ -396,7 +408,10 @@ export class SessionManagerCore extends SessionManager implements OnModuleInit {
     }
     const session = sessions[0];
     const engine = await this.fetchEngineInfo();
-    return { ...session, engine: engine };
+    return {
+      ...session,
+      engine: engine,
+    };
   }
 
   protected stopEvents() {

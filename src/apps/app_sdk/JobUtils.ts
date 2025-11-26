@@ -1,5 +1,5 @@
-import { Job } from 'bullmq';
-import { Backoffs } from 'bullmq';
+import { Backoffs, Job } from 'bullmq';
+import { FlowJob } from 'bullmq/dist/esm/interfaces';
 
 /**
  * Calculates the delay until the next attempt for a job.
@@ -51,6 +51,17 @@ export function HasBeenRetried(job: Job): boolean {
   return attemptsMade > 1;
 }
 
+/**
+ * Hide chatwoot and waha from queue name for user faced messages
+ */
+export function QueueNameRepr(name: string): string {
+  // No "chatwoot" in the name always (it start with chatwoot)
+  name = name.replace('chatwoot.', '');
+  // Replace "waha" with "whatsapp"
+  name = name.replace('waha |', 'whatsapp |');
+  return name;
+}
+
 let base =
   process.env.WAHA_PUBLIC_URL ||
   process.env.WAHA_BASE_URL ||
@@ -59,9 +70,39 @@ let base =
 base = base.replace(/\/+$/, '');
 
 export function JobLink(job: Job): { text: string; url: string } {
-  const text = `${job.queueName} => ${job.id}`;
-  const url = `${base}/jobs/queue/${encodeURIComponent(job.queueName)}/${
-    job.id
-  }`;
+  // Use repr name for text
+  const name = QueueNameRepr(job.queueName);
+  const text = `${name} => ${job.id}`;
+  // Use original queue name in the URL
+  const queue = encodeURIComponent(job.queueName);
+  const id = encodeURIComponent(job.id);
+  const url = `${base}/jobs/queue/${queue}/${id}`;
   return { text: text, url: url };
+}
+
+/**
+ * Chain jobs so that they run one at a time
+ * A | B | C
+ * to
+ * A -> B -> C
+ */
+export function ChainJobsOneAtATime(jobs: FlowJob[]): FlowJob {
+  if (jobs.length == 0) {
+    throw new Error('No jobs provided');
+  }
+
+  for (const job of jobs) {
+    if (job.children.length != 0) {
+      throw new Error('Jobs with children are not supported');
+    }
+  }
+  const left = [...jobs];
+  const root = left.pop();
+  let parent = root;
+  while (left.length != 0) {
+    const job = left.pop();
+    parent.children = [job];
+    parent = job;
+  }
+  return root;
 }

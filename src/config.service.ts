@@ -5,6 +5,7 @@ import { IgnoreJidConfig } from '@waha/core/utils/jids';
 
 import { parseBool } from './helpers';
 import { WebhookConfig } from './structures/webhooks.config.dto';
+import { Auth } from '@waha/core/auth/config';
 
 @Injectable()
 export class WhatsappConfigService implements OnApplicationBootstrap {
@@ -139,10 +140,7 @@ export class WhatsappConfigService implements OnApplicationBootstrap {
   }
 
   getApiKey(): string | undefined {
-    return (
-      this.configService.get('WHATSAPP_API_KEY', '') ||
-      this.configService.get('WAHA_API_KEY', '')
-    );
+    return Auth.key.value;
   }
 
   getExcludedPaths(): string[] {
@@ -150,7 +148,12 @@ export class WhatsappConfigService implements OnApplicationBootstrap {
     if (!value) {
       return [];
     }
-    return value.split(',');
+    return value.split(',').filter(Boolean);
+  }
+
+  getExcludedFullPaths(): string[] {
+    const paths = this.getExcludedPaths();
+    return paths.map((path) => (path.startsWith('/') ? path : `/${path}`));
   }
 
   getHealthMediaFilesThreshold(): number {
