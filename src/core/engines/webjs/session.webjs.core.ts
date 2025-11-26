@@ -723,7 +723,7 @@ export class WhatsappSessionWebJSCore extends WhatsappSession {
     throw new AvailableInPlusVersion();
   }
 
-    sendVoice(request: MessageVoiceRequest) {
+  sendVoice(request: MessageVoiceRequest) {
     const chatId = this.ensureSuffix(request.chatId);
     const options = this.getMessageOptions(request);
 
