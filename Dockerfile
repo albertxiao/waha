@@ -1,5 +1,5 @@
-ARG NODE_IMAGE_TAG=22.16-bookworm-slim
-ARG GOLANG_IMAGE_TAG=1.23-bookworm
+ARG NODE_IMAGE_TAG=24.11-bookworm-slim
+ARG GOLANG_IMAGE_TAG=1.24-bookworm
 
 #
 # Build
@@ -7,17 +7,17 @@ ARG GOLANG_IMAGE_TAG=1.23-bookworm
 FROM node:${NODE_IMAGE_TAG} AS build
 ENV PUPPETEER_SKIP_DOWNLOAD=True
 
+# git + build toolchain for git deps
+RUN apt-get update && apt-get install -y git python3 build-essential && rm -rf /var/lib/apt/lists/*
+
 # npm packages
 WORKDIR /git
 COPY package.json .
 COPY yarn.lock .
 ENV YARN_CHECKSUM_BEHAVIOR=update
 
-# git
-RUN apt-get update && apt-get install -y git
-
 RUN npm install -g corepack && corepack enable
-RUN yarn set version 3.6.3
+RUN yarn set version 4.9.2
 RUN yarn install
 
 # App
@@ -228,6 +228,9 @@ ENV CHOKIDAR_INTERVAL=5000
 
 # WAHA variables
 ENV WAHA_ZIPPER=ZIPUNZIP
+
+# GOWS - use libc DNS resolver
+ENV GODEBUG netdns=cgo
 
 # Run command, etc
 EXPOSE 3000

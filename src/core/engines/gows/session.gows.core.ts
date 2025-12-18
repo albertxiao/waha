@@ -123,6 +123,7 @@ import {
   WAMessage,
   WAMessageReaction,
 } from '@waha/structures/responses.dto';
+import { CallData } from '@waha/structures/calls.dto';
 import { MeInfo, ProxyConfig } from '@waha/structures/sessions.dto';
 import {
   BROADCAST_ID,
@@ -142,6 +143,7 @@ import { onlyEvent } from '@waha/utils/reactive/ops/onlyEvent';
 import * as NodeCache from 'node-cache';
 import {
   filter,
+  groupBy,
   merge,
   mergeMap,
   Observable,
@@ -150,7 +152,7 @@ import {
   share,
   Subject,
 } from 'rxjs';
-import { map } from 'rxjs/operators';
+import { map, debounceTime } from 'rxjs/operators';
 import { promisify } from 'util';
 
 import * as gows from './types';
@@ -159,7 +161,7 @@ import { isFromFullSync } from '@waha/core/engines/gows/appstate';
 import { toVcardV3 } from '@waha/core/vcard';
 import { AckToStatus } from '@waha/core/utils/acks';
 import { ParseEventResponseType } from '@waha/core/utils/events';
-import { DistinctAck } from '@waha/core/utils/reactive';
+import { DistinctAck, DistinctMessages } from '@waha/core/utils/reactive';
 import { Label, LabelDTO, LabelID } from '@waha/structures/labels.dto';
 import { LidToPhoneNumber } from '@waha/structures/lids.dto';
 import { exclude } from '@waha/utils/reactive/ops/exclude';
@@ -171,13 +173,20 @@ import {
   isLabelChatAddedEvent,
   isLabelUpsertEvent,
 } from './labels.gows';
+import {
+  GetEventStreamClient,
+  GetMessageServiceClient,
+} from '@waha/core/engines/gows/clients';
 import esm from '@waha/vendor/esm';
 import { IsEditedMessage } from '@waha/core/utils/pwa';
-import MessageServiceClient = messages.MessageServiceClient;
 import { GoToJSWAProto } from '@waha/core/engines/gows/waproto';
 import { extractWALocation } from '@waha/core/engines/waproto/locaiton';
 import { extractVCards } from '@waha/core/engines/waproto/vcards';
 import { Activity } from '@waha/core/abc/activity';
+import { TmpDir } from '@waha/utils/tmpdir';
+import * as path from 'path';
+import MessageServiceClient = messages.MessageServiceClient;
+import * as fsp from 'fs/promises';
 
 enum WhatsMeowEvent {
   CONNECTED = 'gows.ConnectedEventData',
@@ -201,12 +210,13 @@ enum WhatsMeowEvent {
   EVENT_MESSAGE_RESPONSE = 'gows.EventMessageResponse',
   // Polls
   POLL_VOTE_EVENT = 'gows.PollVoteEvent',
+  // Calls
+  CALL_OFFER = 'events.CallOffer',
+  CALL_ACCEPT = 'events.CallAccept',
+  CALL_REJECT = 'events.CallReject',
+  CALL_TERMINATE = 'events.CallTerminate',
+  CALL_OFFER_NOTICE = 'events.CallOfferNotice',
 }
-
-const gRPCClientConfig = {
-  'grpc.max_send_message_length': 512 * 1024 * 1024,
-  'grpc.max_receive_message_length': 512 * 1024 * 1024,
-};
 
 export interface GowsConfig {
   connection: string;
@@ -272,10 +282,10 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
       }),
     });
 
-    this.client = new MessageServiceClient(
+    this.client = GetMessageServiceClient(
+      this.name,
       this.engineConfig.connection,
       grpc.credentials.createInsecure(),
-      gRPCClientConfig,
     );
 
     try {
@@ -302,10 +312,10 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     this.stream$ = new GowsEventStreamObservable(
       this.loggerBuilder.child({ grpc: 'stream' }),
       () => {
-        const client = new messages.EventStreamClient(
+        const client = GetEventStreamClient(
+          this.name,
           this.engineConfig.connection,
           grpc.credentials.createInsecure(),
-          gRPCClientConfig,
         );
         const stream = client.StreamEvents(this.session);
         return { client, stream };
@@ -469,6 +479,10 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
         return msg;
       }),
       mergeMap((msg) => this.processIncomingMessage(msg, true)),
+      filter(Boolean),
+      // Deduplicate messages by ID to prevent duplicate webhooks
+      // @see https://github.com/devlikeapro/waha/issues/1564
+      DistinctMessages(),
       share(), // share it so we don't process twice in message.any
     );
     messagesFromOthers$ = messagesFromOthers$.pipe(
@@ -477,6 +491,10 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
         return msg;
       }),
       mergeMap((msg) => this.processIncomingMessage(msg, true)),
+      filter(Boolean),
+      // Deduplicate messages by ID to prevent duplicate webhooks
+      // @see https://github.com/devlikeapro/waha/issues/1564
+      DistinctMessages(),
       share(), // share it so we don't process twice in message.any
     );
     const messagesFromAll$ = merge(messagesFromMe$, messagesFromOthers$);
@@ -530,17 +548,71 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
       onlyEvent(WhatsMeowEvent.RECEIPT),
       filter((r: any) => this.jids.include(r?.Chat)),
     );
-    const messageAck$ = receipt$.pipe(
+    const [receiptGroups$, receiptContacts$] = partition(receipt$, (r: any) =>
+      isJidGroup(r?.Chat || r?.Info?.Chat),
+    );
+    const messageAckGroups$ = receiptGroups$.pipe(
       mergeMap(this.receiptToMessageAck.bind(this)),
       DistinctAck(),
     );
-    this.events2.get(WAHAEvents.MESSAGE_ACK).switch(messageAck$);
+    const messageAckContacts$ = receiptContacts$.pipe(
+      mergeMap(this.receiptToMessageAck.bind(this)),
+      DistinctAck(),
+    );
+    this.events2.get(WAHAEvents.MESSAGE_ACK_GROUP).switch(messageAckGroups$);
+    this.events2.get(WAHAEvents.MESSAGE_ACK).switch(messageAckContacts$);
 
     const messageReactions$ = messages$.pipe(
       filter((msg) => !!msg?.Message?.reactionMessage),
       map(this.processMessageReaction.bind(this)),
     );
     this.events2.get(WAHAEvents.MESSAGE_REACTION).switch(messageReactions$);
+
+    //
+    // Calls
+    //
+    const callOffer$ = all$.pipe(
+      onlyEvent(WhatsMeowEvent.CALL_OFFER),
+      filter(this.shouldProcessCallEvent.bind(this)),
+      map(this.toCallData.bind(this)),
+    );
+    const callOfferNotice$ = all$.pipe(
+      onlyEvent(WhatsMeowEvent.CALL_OFFER_NOTICE),
+      filter(this.shouldProcessCallEvent.bind(this)),
+      map(this.toCallData.bind(this)),
+    );
+    this.events2
+      .get(WAHAEvents.CALL_RECEIVED)
+      .switch(merge(callOffer$, callOfferNotice$));
+
+    const callAccept$ = all$.pipe(
+      onlyEvent(WhatsMeowEvent.CALL_ACCEPT),
+      filter(this.shouldProcessCallEvent.bind(this)),
+      map(this.toCallData.bind(this)),
+    );
+    this.events2.get(WAHAEvents.CALL_ACCEPTED).switch(callAccept$);
+
+    const callReject$ = all$.pipe(
+      onlyEvent(WhatsMeowEvent.CALL_REJECT),
+      filter(this.shouldProcessCallEvent.bind(this)),
+    );
+    const callTerminate$ = all$.pipe(
+      onlyEvent(WhatsMeowEvent.CALL_TERMINATE),
+      filter(this.shouldProcessCallEvent.bind(this)),
+      // Skip terminate events that only mean the call was accepted or rejected on another device
+      filter(
+        (call: any) =>
+          call?.Reason !== 'accepted_elsewhere' &&
+          call?.Reason !== 'rejected_elsewhere',
+      ),
+    );
+    // Debounce per call to collapse duplicate reject/terminate events
+    const callRejected$ = merge(callReject$, callTerminate$).pipe(
+      groupBy((call: any) => this.getCallId(call) || 'unknown'),
+      mergeMap((group$) => group$.pipe(debounceTime(1_000))),
+      map(this.toCallData.bind(this)),
+    );
+    this.events2.get(WAHAEvents.CALL_REJECTED).switch(callRejected$);
 
     const presence$ = all$.pipe(
       onlyEvent(WhatsMeowEvent.PRESENCE),
@@ -701,7 +773,6 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     this.status = WAHASessionStatus.STOPPED;
     this.events?.stop();
     this.stopEvents();
-    this.client?.close();
     this.mediaManager.close();
   }
 
@@ -807,6 +878,15 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     );
     const data = response.toObject();
     return data.id;
+  }
+
+  async rejectCall(from: string, id: string): Promise<void> {
+    const request = new messages.RejectCallRequest({
+      session: this.session,
+      from: toJID(this.ensureSuffix(from)),
+      id: id,
+    });
+    await promisify(this.client.RejectCall)(request);
   }
 
   @Activity()
@@ -2166,6 +2246,59 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     };
   }
 
+  private getCallId(call: any): string | null {
+    return call?.CallID || call?.Data?.Attrs?.['call-id'] || null;
+  }
+
+  private shouldProcessCallEvent(call: any): boolean {
+    if (!call) {
+      return false;
+    }
+    if (call.GroupJID && this.jids.include(call.GroupJID)) {
+      return true;
+    }
+    return this.jids.include(call.From);
+  }
+
+  private toCallData(call: any): CallData {
+    const date = call?.Timestamp ? new Date(call.Timestamp) : new Date();
+    const timestamp = date.getTime() / 1000;
+    const isVideo = this.isVideoCall(call);
+    const isGroup = this.isGroupCall(call);
+    const from = call?.From || call?.GroupJID;
+    return {
+      id: this.getCallId(call),
+      from: from ? toCusFormat(from) : undefined,
+      timestamp: timestamp,
+      isVideo: Boolean(isVideo),
+      isGroup: isGroup,
+      _data: call,
+    };
+  }
+
+  private isVideoCall(call: any): boolean {
+    if (!call) return false;
+    if (call?.Media === 'video') return true;
+    const attrsMedia = call?.Data?.Attrs?.media || call?.Data?.Attrs?.type;
+    if (attrsMedia === 'video') return true;
+    const content = call?.Data?.Content;
+    if (Array.isArray(content)) {
+      const hasVideoTag = content.some((item: any) => item?.Tag === 'video');
+      if (hasVideoTag) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private isGroupCall(call: any): boolean {
+    if (!call) return false;
+    if (call?.GroupJID) return true;
+    const attrs = call?.Data?.Attrs;
+    if (!attrs) return false;
+    return attrs.type === 'group' || Boolean(attrs['group-jid']);
+  }
+
   private toEventResponsePayload(event: any): EventResponsePayload {
     const msg = this.toWAMessage(event);
     let response: EventResponse | null = null;
@@ -2369,19 +2502,47 @@ export class GOWSEngineMediaProcessor implements IMediaEngineProcessor<any> {
   }
 
   async getMediaBuffer(message: any): Promise<Buffer | null> {
+    const mediaDownloadTimeoutMs = 600_000; // 10 minutes
+
     const data = JSON.stringify(message.Message);
-    const request = new messages.DownloadMediaRequest({
-      // double "session" it's not a mistake here
-      session: this.session.session,
-      message: data,
-      jid: message.Info.Chat,
-      messageId: message.Info.ID,
-    });
-    const response = await promisify(this.session.client.DownloadMedia)(
-      request,
+    const tmpdir = new TmpDir(
+      this.session.logger,
+      `waha-media-${this.session.name}-`,
     );
-    const obj = response.toObject();
-    return Buffer.from(obj.content);
+    return await tmpdir.use(async (dir) => {
+      const file = path.join(dir, 'content.tmp');
+      const request = new messages.DownloadMediaRequest({
+        // double "session" it's not a mistake here
+        session: this.session.session,
+        message: data,
+        jid: message.Info.Chat,
+        messageId: message.Info.ID,
+        contentPath: file,
+      });
+
+      const opts = {
+        deadline: new Date(Date.now() + mediaDownloadTimeoutMs),
+      };
+      const call = promisify(
+        this.session.client.DownloadMedia.bind(this.session.client),
+      );
+      try {
+        const response = await call(request, opts);
+        const obj = response.toObject();
+        if (!obj.contentPath) {
+          // Read directly from grpc response
+          return Buffer.from(obj.content);
+        } else {
+          // Read from the file
+          return await fsp.readFile(obj.contentPath);
+        }
+      } catch (err) {
+        if (err?.code === grpc.status.DEADLINE_EXCEEDED) {
+          err.message = `DownloadMedia timed out after ${mediaDownloadTimeoutMs}ms for message '${message?.Info?.ID}'`;
+        }
+        throw err;
+      }
+    });
   }
 
   getFilename(message: any): string | null {
